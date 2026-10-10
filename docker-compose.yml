@@ -1,0 +1,125 @@
+# `docker compose up --build` runs everything: web on :8080, API on :3000 (Swagger at /docs),
+# RabbitMQ management UI on :15672, mock ads service on :4000.
+# For local development without containers for the app, run only: npm run infra:up
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://${POSTGRES_USER:-stocksync}:${POSTGRES_PASSWORD:-stocksync}@postgres:5432/${POSTGRES_DB:-stocksync}
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-stocksync}:${RABBITMQ_PASSWORD:-stocksync}@rabbitmq:5672
+  # Development default only. Set JWT_SECRET in .env for anything beyond a local demo.
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-0123456789abcdef}
+  JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+  ADS_API_URL: http://mock-ads:4000
+  ADS_TIMEOUT_MS: ${ADS_TIMEOUT_MS:-3000}
+  SYNC_BATCH_SIZE: ${SYNC_BATCH_SIZE:-50}
+  SYNC_MAX_ATTEMPTS: ${SYNC_MAX_ATTEMPTS:-5}
+  SYNC_RATE_LIMIT_RPS: ${SYNC_RATE_LIMIT_RPS:-5}
+  SYNC_RETRY_DELAYS_MS: ${SYNC_RETRY_DELAYS_MS:-5000,30000,120000}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stocksync}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stocksync}
+      POSTGRES_DB: ${POSTGRES_DB:-stocksync}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-stocksync}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-stocksync}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot job: applies migrations and seeds the demo tenants (idempotent), then exits.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["sh", "-c", "node apps/api/dist/db/migrate.js && node apps/api/dist/db/seed.js"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  mock-ads:
+    build:
+      context: .
+      dockerfile: apps/mock-ads/Dockerfile
+    environment:
+      PORT: 4000
+      MOCK_RATE_LIMIT: ${MOCK_RATE_LIMIT:-5}
+      MOCK_FAILURE_RATE: ${MOCK_FAILURE_RATE:-0.2}
+      MOCK_DUPLICATE_RATE: ${MOCK_DUPLICATE_RATE:-0.1}
+      MOCK_HANG_MS: ${MOCK_HANG_MS:-8000}
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment: *app-env
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["node", "apps/api/dist/worker.js"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      mock-ads:
+        condition: service_started
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  rabbitdata:
