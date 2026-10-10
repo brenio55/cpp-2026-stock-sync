@@ -1,0 +1,28 @@
+{
+  "name": "stocksync",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Multi-tenant inventory platform with asynchronous sync to an external ads service",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "infra:up": "docker compose up -d --wait postgres rabbitmq",
+    "infra:down": "docker compose down",
+    "migrate": "npm run migrate -w apps/api",
+    "seed": "npm run seed -w apps/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint .",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "typescript-eslint": "^8.71.1"
+  }
+}
