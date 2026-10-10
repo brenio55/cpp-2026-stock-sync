@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      # The API tests run against a real PostgreSQL: concurrency and locking cannot be proven with mocks.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: stocksync
+          POSTGRES_PASSWORD: stocksync
+          POSTGRES_DB: stocksync
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stocksync"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://stocksync:stocksync@localhost:5432/stocksync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
